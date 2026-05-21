@@ -26,7 +26,6 @@ def get_macro_data():
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_stock_data(ticker):
-    # Throttle requests to respect Yahoo's limits
     time.sleep(0.5)
     try:
         df = yf.download(ticker, period="1y", progress=False)
@@ -38,7 +37,6 @@ def get_stock_data(ticker):
             
         tk = yf.Ticker(ticker)
         
-        # Safely extract data so Streamlit can cache it in memory
         tk_info = tk.info if hasattr(tk, 'info') else {}
         tk_news = tk.news if hasattr(tk, 'news') else []
         tk_options = tk.options if hasattr(tk, 'options') else []
@@ -135,7 +133,6 @@ else:
             st.subheader(f"{ticker} Analysis & Strategy")
             
             with st.spinner(f"Loading cached data for {ticker}..."):
-                # Hit the memory cache instead of the Yahoo API!
                 df, live_df, tk_info, news, exps, insider_df = get_stock_data(ticker)
             
             if df.empty:
@@ -147,7 +144,6 @@ else:
                 else:
                     curr_price = float(df['Close'].dropna().iloc[-1])
                 
-                # --- Data Formatting ---
                 vol = int(df['Volume'].dropna().iloc[-1])
                 vol_str = f"{vol / 1_000_000_000:.2f}B" if vol >= 1_000_000_000 else (f"{vol / 1_000_000:.2f}M" if vol >= 1_000_000 else f"{vol:,}")
                     
@@ -161,12 +157,10 @@ else:
                 if mkt_cap:
                      cap_str = f"${mkt_cap / 1_000_000_000_000:.2f}T" if mkt_cap >= 1_000_000_000_000 else (f"${mkt_cap / 1_000_000_000:.2f}B" if mkt_cap >= 1_000_000_000 else f"${mkt_cap / 1_000_000:.2f}M")
                      
-                # --- Calculate Historical Volatility ---
                 df['Daily_Return'] = df['Close'].pct_change()
                 hist_vol = df['Daily_Return'].tail(30).std() * np.sqrt(252)
                 hist_vol = max(hist_vol, 0.25)
                 
-                # --- Technical Indicators ---
                 delta = df['Close'].diff()
                 gain = delta.where(delta > 0, 0.0).ewm(alpha=1/14, adjust=False).mean()
                 loss = (-delta.where(delta < 0, 0.0)).ewm(alpha=1/14, adjust=False).mean()
@@ -191,7 +185,6 @@ else:
                 if pd.isna(expected_1w_move) or expected_1w_move < (curr_price * 0.02):
                     expected_1w_move = curr_price * 0.025
 
-                # --- Scoring Logic ---
                 latest = df.iloc[-1]
                 prev = df.iloc[-2] if len(df) > 1 else latest
                 
@@ -228,19 +221,23 @@ else:
                     elif neg_count > pos_count:
                         news_score = -1.0; news_sentiment_reason = "Bearish Headwinds"
                 
-                # 2. Insider Sentiment
+                # 2. Insider Sentiment (BULLETPROOF FIX)
                 insider_score = 0.0
                 insider_sentiment_reason = "No Recent Action"
                 if insider_df is not None and not insider_df.empty:
-                    insider_text = insider_df.astype(str).apply(lambda x: ' '.join(x), axis=1).str.lower()
-                    recent_buys = insider_text.str.contains('buy|purchase').sum()
-                    recent_sells = insider_text.str.contains('sale|sell').sum()
-                    if recent_buys > recent_sells:
-                        insider_score = 1.0; insider_sentiment_reason = "Bullish (Accumulation)"
-                    elif recent_sells > recent_buys:
-                        insider_score = -1.0; insider_sentiment_reason = "Bearish (Distribution)"
-                    else:
-                        insider_sentiment_reason = "Mixed Action"
+                    try:
+                        # Explicitly cast every single value to string before joining
+                        insider_text = insider_df.apply(lambda row: ' '.join([str(val) for val in row]), axis=1).str.lower()
+                        recent_buys = insider_text.str.contains('buy|purchase').sum()
+                        recent_sells = insider_text.str.contains('sale|sell').sum()
+                        if recent_buys > recent_sells:
+                            insider_score = 1.0; insider_sentiment_reason = "Bullish (Accumulation)"
+                        elif recent_sells > recent_buys:
+                            insider_score = -1.0; insider_sentiment_reason = "Bearish (Distribution)"
+                        else:
+                            insider_sentiment_reason = "Mixed Action"
+                    except Exception:
+                        pass
                     
                 score += futures_modifier + news_score + insider_score
                     
@@ -250,7 +247,6 @@ else:
                 elif score <= -0.5: signal = "🔴 SELL"
                 else: signal = "🟡 HOLD / NEUTRAL"
 
-                # --- Display Layout ---
                 st.markdown(f"### Current Trend: {signal}")
                 
                 col_strat1, col_strat2 = st.columns(2)
@@ -281,14 +277,12 @@ else:
                                     if not valid_exps:
                                         st.warning("⚠️ No expirations found in the 3 to 45-day window.")
                                     else:
-                                        # Use cached function
                                         all_opts = get_option_chains(ticker, valid_exps[:4])
                                         
                                         if all_opts.empty:
                                             st.warning("⚠️ Option chains are currently empty.")
                                         else:
                                             opt_type = "Call" if score > 0 else "Put"
-                                            # Filter out the wrong option types
                                             all_opts = all_opts[all_opts['opt_type'] == opt_type].copy()
                                             
                                             all_opts['ask'] = all_opts['ask'].fillna(0)
@@ -354,9 +348,6 @@ else:
 
                 st.divider()
                 
-                # --- Multi-Row Metrics Dashboard ---
-                st.markdown("##### Performance & Sentiment Profile")
-                
                 col_m1, col_m2, col_m3, col_m4 = st.columns(4)
                 col_m1.metric("Market Price", f"${curr_price:.2f}")
                 col_m2.metric("Daily Volume", vol_str)
@@ -380,7 +371,6 @@ else:
                 
                 st.divider()
 
-                # --- Charts Visualization ---
                 st.markdown("**Price Tracking**")
                 st.line_chart(df[['Close', 'EMA_20', 'Support_20']], use_container_width=True)
                 
@@ -394,7 +384,6 @@ else:
                     
                 st.divider()
                 
-                # --- Deep Dive Expanders ---
                 with st.expander("📊 View Raw Price & Volume Data (Last 30 Days)"):
                     raw_df = df[['Close', 'Volume']].sort_index(ascending=False).head(30)
                     raw_df.index = raw_df.index.strftime('%Y-%m-%d')

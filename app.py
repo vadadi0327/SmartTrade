@@ -3,6 +3,7 @@ import yfinance as yf
 import pandas as pd
 import numpy as np
 import time
+import requests
 from datetime import datetime
 from scipy.stats import norm
 
@@ -13,11 +14,21 @@ st.title("📈 Stock Tracker, Options & Equity Entry Engine")
 if "tickers" not in st.session_state:
     st.session_state.tickers = ["RKLB", "PLTR", "CRCL", "CRWV", "OKLO", "SMCI"]
 
+# --- THE BROWSER SPOOF: Bypasses the Yahoo Finance 429 Error ---
+def get_spoofed_session():
+    session = requests.Session()
+    # Forces Yahoo to treat this python script as a standard Windows Chrome Browser
+    session.headers.update({
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36'
+    })
+    return session
+
 # --- CACHING ENGINE: PROTECTS AGAINST RATE LIMITS ---
 @st.cache_data(ttl=300, show_spinner=False)
 def get_macro_data():
     try:
-        nq = yf.download("NQ=F", period="5d", progress=False)
+        session = get_spoofed_session()
+        nq = yf.download("NQ=F", period="5d", session=session, progress=False)
         if isinstance(nq.columns, pd.MultiIndex):
             nq.columns = nq.columns.droplevel(1)
         return nq
@@ -26,16 +37,21 @@ def get_macro_data():
 
 @st.cache_data(ttl=300, show_spinner=False)
 def get_stock_data(ticker):
+    # Micro-delay to avoid triggering rapid-fire bot protection
     time.sleep(0.5)
     try:
-        df = yf.download(ticker, period="1y", progress=False)
-        live_df = yf.download(ticker, period="1d", interval="1m", prepost=True, progress=False)
+        session = get_spoofed_session()
+        
+        # Inject the spoofed session into the download calls
+        df = yf.download(ticker, period="1y", session=session, progress=False)
+        live_df = yf.download(ticker, period="1d", interval="1m", prepost=True, session=session, progress=False)
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.droplevel(1)
         if isinstance(live_df.columns, pd.MultiIndex):
             live_df.columns = live_df.columns.droplevel(1)
             
-        tk = yf.Ticker(ticker)
+        # Inject the spoofed session into the Ticker object
+        tk = yf.Ticker(ticker, session=session)
         
         tk_info = tk.info if hasattr(tk, 'info') else {}
         tk_news = tk.news if hasattr(tk, 'news') else []
@@ -53,7 +69,9 @@ def get_stock_data(ticker):
 @st.cache_data(ttl=300, show_spinner=False)
 def get_option_chains(ticker, valid_exps_list):
     all_opts = pd.DataFrame()
-    tk = yf.Ticker(ticker)
+    session = get_spoofed_session()
+    tk = yf.Ticker(ticker, session=session)
+    
     for exp, dte in valid_exps_list:
         try:
             chain = tk.option_chain(exp)
@@ -221,12 +239,11 @@ else:
                     elif neg_count > pos_count:
                         news_score = -1.0; news_sentiment_reason = "Bearish Headwinds"
                 
-                # 2. Insider Sentiment (BULLETPROOF FIX)
+                # 2. Insider Sentiment
                 insider_score = 0.0
                 insider_sentiment_reason = "No Recent Action"
                 if insider_df is not None and not insider_df.empty:
                     try:
-                        # Explicitly cast every single value to string before joining
                         insider_text = insider_df.apply(lambda row: ' '.join([str(val) for val in row]), axis=1).str.lower()
                         recent_buys = insider_text.str.contains('buy|purchase').sum()
                         recent_sells = insider_text.str.contains('sale|sell').sum()
